@@ -1,0 +1,525 @@
+from flask import Flask, request, redirect, session, render_template_string
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+
+app = Flask(__name__)
+
+# ОБЯЗАТЕЛЬНО поменяй это значение
+app.secret_key = "retroplay-9f4Kx2mP7qL8vN3z"
+
+DATABASE = "retroplay.db"
+
+
+# =========================
+# DATABASE
+# =========================
+
+def get_db():
+    db = sqlite3.connect(DATABASE)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+def setup_database():
+    db = get_db()
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            coins INTEGER DEFAULT 100
+        )
+    """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS games (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            players INTEGER DEFAULT 0
+        )
+    """)
+
+    count = db.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+
+    if count == 0:
+        db.execute(
+            "INSERT INTO games (name, description) VALUES (?, ?)",
+            ("Brick World", "Build your own world.")
+        )
+        db.execute(
+            "INSERT INTO games (name, description) VALUES (?, ?)",
+            ("Classic Battle", "Battle other players.")
+        )
+        db.execute(
+            "INSERT INTO games (name, description) VALUES (?, ?)",
+            ("Retro Island", "Explore a mysterious island.")
+        )
+
+    db.commit()
+    db.close()
+
+
+# =========================
+# HTML
+# =========================
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>{{ title }}</title>
+<style>
+body {
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    background: #e9e9e9;
+    color: #333;
+}
+.header {
+    height: 58px;
+    background: #333;
+    color: white;
+    display: flex;
+    align-items: center;
+    padding: 0 25px;
+    box-sizing: border-box;
+}
+.logo {
+    font-size: 25px;
+    font-weight: bold;
+    margin-right: 35px;
+}
+.nav {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+}
+.nav a {
+    color: white;
+    text-decoration: none;
+}
+.nav a:hover {
+    text-decoration: underline;
+}
+.account {
+    margin-left: auto;
+    display: flex;
+    gap: 15px;
+}
+.container {
+    width: 1000px;
+    max-width: calc(100% - 30px);
+    margin: 30px auto;
+}
+.hero {
+    background: white;
+    border: 1px solid #ccc;
+    padding: 30px;
+    margin-bottom: 25px;
+}
+.hero h1 {
+    margin-top: 0;
+}
+.games {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+.game {
+    width: 280px;
+    background: white;
+    border: 1px solid #ccc;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+.thumbnail {
+    height: 150px;
+    background: #ccc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 60px;
+}
+.game-content {
+    padding: 15px;
+}
+.game-content h3 {
+    margin-top: 0;
+}
+.play {
+    background: #3b82c4;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    cursor: pointer;
+}
+.play:hover {
+    background: #286aa3;
+}
+.box {
+    width: 360px;
+    max-width: calc(100% - 40px);
+    margin: 80px auto;
+    background: white;
+    border: 1px solid #ccc;
+    padding: 30px;
+    box-sizing: border-box;
+}
+.box h1 {
+    margin-top: 0;
+}
+input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px;
+    margin-bottom: 12px;
+    border: 1px solid #bbb;
+}
+.button {
+    background: #3b82c4;
+    color: white;
+    border: none;
+    padding: 11px 20px;
+    cursor: pointer;
+}
+.button:hover {
+    background: #286aa3;
+}
+.profile {
+    background: white;
+    border: 1px solid #ccc;
+    padding: 25px;
+}
+.avatar {
+    width: 120px;
+    height: 120px;
+    background: #ccc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 60px;
+    margin-bottom: 15px;
+}
+.footer {
+    text-align: center;
+    color: #777;
+    padding: 40px;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div class="logo">RetroPlay</div>
+
+    <div class="nav">
+        <a href="/">Home</a>
+        <a href="/games">Games</a>
+        <a href="/arcade">Arcade</a>
+
+        {% if user %}
+        <a href="/profile">Profile</a>
+        {% endif %}
+    </div>
+
+    <div class="account">
+        {% if user %}
+            <span>{{ user["username"] }}</span>
+            <span>🪙 {{ user["coins"] }}</span>
+            <a href="/logout">Logout</a>
+        {% else %}
+            <a href="/login">Login</a>
+            <a href="/register">Register</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="container">
+{{ content | safe }}
+</div>
+
+<div class="footer">
+    RetroPlay © 2026
+</div>
+
+</body>
+</html>
+"""
+
+
+# =========================
+# HOME
+# =========================
+
+@app.route("/")
+def home():
+    db = get_db()
+    games = db.execute("SELECT * FROM games").fetchall()
+
+    user = None
+    if "user_id" in session:
+        user = db.execute(
+            "SELECT * FROM users WHERE id = ?",
+            (session["user_id"],)
+        ).fetchone()
+
+    db.close()
+
+    content = """
+    <div class="hero">
+        <h1>Welcome to RetroPlay</h1>
+        <p>A community-made gaming platform inspired by the classic web era.</p>
+        <p>Build. Play. Create.</p>
+    </div>
+
+    <h2>Featured Games</h2>
+    <div class="games">
+    """
+
+    for game in games:
+        content += f"""
+        <div class="game">
+            <div class="thumbnail">🧱</div>
+            <div class="game-content">
+                <h3>{game["name"]}</h3>
+                <p>{game["description"]}</p>
+                <button class="play"
+                    onclick="alert('Game launching soon!')">
+                    Play
+                </button>
+            </div>
+        </div>
+        """
+
+    content += "</div>"
+
+    return render_template_string(
+        HTML,
+        title="RetroPlay",
+        content=content,
+        user=user
+    )
+
+
+# =========================
+# GAMES
+# =========================
+
+@app.route("/games")
+def games():
+    db = get_db()
+    games = db.execute("SELECT * FROM games").fetchall()
+
+    user = None
+    if "user_id" in session:
+        user = db.execute(
+            "SELECT * FROM users WHERE id = ?",
+            (session["user_id"],)
+        ).fetchone()
+
+    db.close()
+
+    content = """
+    <h1>Games</h1>
+    <div class="games">
+    """
+
+    for game in games:
+        content += f"""
+        <div class="game">
+            <div class="thumbnail">🎮</div>
+            <div class="game-content">
+                <h3>{game["name"]}</h3>
+                <p>{game["description"]}</p>
+                <button class="play"
+                    onclick="alert('Game launching soon!')">
+                    Play
+                </button>
+            </div>
+        </div>
+        """
+
+    content += "</div>"
+
+    return render_template_string(
+        HTML,
+        title="Games",
+        content=content,
+        user=user
+    )
+
+
+# =========================
+# ARCADE
+# =========================
+
+@app.route("/arcade")
+def arcade():
+    return redirect("/games")
+
+
+# =========================
+# REGISTER
+# =========================
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        if len(username) < 3:
+            return "Username must contain at least 3 characters."
+
+        if len(password) < 6:
+            return "Password must contain at least 6 characters."
+
+        db = get_db()
+
+        try:
+            db.execute(
+                """
+                INSERT INTO users (username, password)
+                VALUES (?, ?)
+                """,
+                (username, generate_password_hash(password))
+            )
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.close()
+            return "That username is already taken."
+
+        db.close()
+        return redirect("/login")
+
+    content = """
+    <div class="box">
+        <h1>Create Account</h1>
+        <form method="POST">
+            <input name="username" placeholder="Username"
+                   maxlength="20" required>
+            <input name="password" type="password"
+                   placeholder="Password" required>
+            <button class="button">Register</button>
+        </form>
+    </div>
+    """
+
+    return render_template_string(
+        HTML,
+        title="Register",
+        content=content,
+        user=None
+    )
+
+
+# =========================
+# LOGIN
+# =========================
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+
+        db = get_db()
+
+        user = db.execute(
+            """
+            SELECT * FROM users
+            WHERE username = ?
+            """,
+            (username,)
+        ).fetchone()
+
+        db.close()
+
+        if user and check_password_hash(user["password"], password):
+            session["user_id"] = user["id"]
+            return redirect("/")
+
+        return "Incorrect username or password."
+
+    content = """
+    <div class="box">
+        <h1>Login</h1>
+        <form method="POST">
+            <input name="username" placeholder="Username" required>
+            <input name="password" type="password"
+                   placeholder="Password" required>
+            <button class="button">Login</button>
+        </form>
+    </div>
+    """
+
+    return render_template_string(
+        HTML,
+        title="Login",
+        content=content,
+        user=None
+    )
+
+
+# =========================
+# PROFILE
+# =========================
+
+@app.route("/profile")
+def profile():
+    if "user_id" not in session:
+        return redirect("/login")
+
+    db = get_db()
+
+    user = db.execute(
+        """
+        SELECT * FROM users
+        WHERE id = ?
+        """,
+        (session["user_id"],)
+    ).fetchone()
+
+    db.close()
+
+    content = f"""
+    <div class="profile">
+        <div class="avatar">🙂</div>
+        <h1>{user["username"]}</h1>
+        <p>User ID: {user["id"]}</p>
+        <p>Coins: 🪙 {user["coins"]}</p>
+    </div>
+    """
+
+    return render_template_string(
+        HTML,
+        title="Profile",
+        content=content,
+        user=user
+    )
+
+
+# =========================
+# LOGOUT
+# =========================
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
+
+
+# =========================
+# START
+# =========================
+
+if __name__ == "__main__":
+    setup_database()
+
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=True
+    )
